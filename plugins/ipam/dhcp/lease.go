@@ -362,7 +362,7 @@ func (l *DHCPLease) downIface() {
 }
 
 func (l *DHCPLease) renew() error {
-	c, err := newDHCPClient(l.link, l.timeout, l.broadcast)
+	c, err := newDHCPClient(l.link, l.timeout, false)
 	if err != nil {
 		return err
 	}

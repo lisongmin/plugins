@@ -298,8 +298,6 @@ func (c *Client) RenewalRequestPacket(acknowledgement *dhcp4.Packet) dhcp4.Packe
 	messageid := make([]byte, 4)
 	c.generateXID(messageid)
 
-	acknowledgementOptions := acknowledgement.ParseOptions()
-
 	packet := dhcp4.NewPacket(dhcp4.BootRequest)
 	packet.SetCHAddr(acknowledgement.CHAddr())
 
@@ -307,10 +305,14 @@ func (c *Client) RenewalRequestPacket(acknowledgement *dhcp4.Packet) dhcp4.Packe
 	packet.SetCIAddr(acknowledgement.YIAddr())
 	packet.SetSIAddr(acknowledgement.SIAddr())
 
-	packet.SetBroadcast(c.broadcast)
+	// Following options must not be sent in renew
+	// - Requested IP Address
+	// - Server Identifier
+	//
+	// and renew must using unicast but not broadcast.
+	//
+	// See https://datatracker.ietf.org/doc/html/rfc2131#section-4.3.6 for details
 	packet.AddOption(dhcp4.OptionDHCPMessageType, []byte{byte(dhcp4.Request)})
-	packet.AddOption(dhcp4.OptionRequestedIPAddress, (acknowledgement.YIAddr()).To4())
-	packet.AddOption(dhcp4.OptionServerIdentifier, acknowledgementOptions[dhcp4.OptionServerIdentifier])
 
 	return packet
 }
