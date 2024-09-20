@@ -53,6 +53,7 @@ const (
 	leaseStateBound = iota
 	leaseStateRenewing
 	leaseStateRebinding
+	leaseStateExpired
 )
 
 // This implementation uses 1 OS thread per lease. This is because
@@ -313,8 +314,18 @@ func (l *DHCPLease) maintain() {
 				log.Printf("%v: lease renewed, expiration is %v", l.clientID, l.expireTime)
 				state = leaseStateBound
 			}
-
 		case leaseStateRebinding:
+			if err := l.rebind(); err != nil {
+				log.Printf("%v: %v", l.clientID, err)
+				if time.Now().After(l.expireTime) {
+					log.Printf("%v: lease expired, re-acquiring address", l.clientID)
+					state = leaseStateExpired
+				}
+			} else {
+				log.Printf("%v: lease rebound, expiration is %v", l.clientID, l.expireTime)
+				state = leaseStateBound
+			}
+		case leaseStateExpired:
 			if err := l.acquire(); err != nil {
 				log.Printf("%v: %v", l.clientID, err)
 
@@ -324,7 +335,7 @@ func (l *DHCPLease) maintain() {
 					return
 				}
 			} else {
-				log.Printf("%v: lease rebound, expiration is %v", l.clientID, l.expireTime)
+				log.Printf("%v: lease acquired, expiration is %v", l.clientID, l.expireTime)
 				state = leaseStateBound
 			}
 		}
@@ -351,6 +362,39 @@ func (l *DHCPLease) downIface() {
 }
 
 func (l *DHCPLease) renew() error {
+	srcAddr := &net.UDPAddr{IP: l.latestLease.ACK.YourIPAddr, Port: dhcp4.ClientPort}
+	destAddr := &net.UDPAddr{IP: l.latestLease.ACK.ServerIdentifier(), Port: dhcp4.ServerPort}
+	c, err := newDHCPClient(
+		l.link,
+		l.timeout,
+		nclient4.WithUnicast(srcAddr),
+		nclient4.WithServerAddr(destAddr),
+	)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	timeoutCtx, cancel := context.WithTimeoutCause(l.ctx, l.resendTimeout, errNoMoreTries)
+	defer cancel()
+	lease, err := backoffRetry(timeoutCtx, l.resendMax, func() (*nclient4.Lease, error) {
+		return c.Renew(
+			timeoutCtx,
+			l.latestLease,
+			withClientID(l.clientID),
+			dhcp4.WithBroadcast(false),
+			withAllOptions(l),
+		)
+	})
+	if err != nil {
+		return err
+	}
+
+	l.commit(lease)
+	return nil
+}
+
+func (l *DHCPLease) rebind() error {
 	c, err := newDHCPClient(l.link, l.timeout)
 	if err != nil {
 		return err
@@ -364,6 +408,7 @@ func (l *DHCPLease) renew() error {
 			timeoutCtx,
 			l.latestLease,
 			withClientID(l.clientID),
+			dhcp4.WithBroadcast(true),
 			withAllOptions(l),
 		)
 	})
